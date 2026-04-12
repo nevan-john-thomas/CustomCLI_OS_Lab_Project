@@ -18,9 +18,15 @@ interprocess communications (e.g. pipes), etc.
 typedef struct Command
 {
     int argc;
-    char **argv;
+    char **argv; // Must be NULL pointer terminated regardless so it can be directly passed to the execvp function
 } Command; 
 // Represents a single command passed into the custom shell
+
+typedef struct CommandInfo
+{
+    int command_count;
+    Command *cmds; // Must be NULL pointer terminated regardless so it can be directly passed to the execvp function
+} CommandInfo; 
 
 void displayCommands(Command commands[], int cmd_count) {
     /*
@@ -107,7 +113,7 @@ Command parseStringToCommand(char *string_ptr, int length) {
 
     // Allocate memory on the Heap for the arguments
     char **argv = (char **) malloc((sizeof (char *)) * (argc + 1));
-    argv[argc] = NULL; // Null terminate the array of arguments
+    argv[argc] = NULL; // Null terminate the array of arguments so that it can directly be passed for the execvp function
 
     cmd.argv = argv;
 
@@ -124,16 +130,8 @@ Command parseStringToCommand(char *string_ptr, int length) {
     for (int i = 0; i < length; i++) {
         char c = string_ptr[i];
 
-        if (encounteredChar && (i == length - 1)) { // ie. it's at the last character 
-            // To account for the case where double quotes weren't properly closed
-            // or if it ends right after a backslash character
-            endIndex = i + 1; // +1 so that the last character is also included 
-            argv[arg_index] = copySubstring(string_ptr + startIndex, startIndex, endIndex);
-            arg_index++;
-        } 
-
         if (encounteredChar && isspace(c) && !encounteredQuote) { // If a whitespace is encountered at the end of an argument
-            if (encounteredSlash) {
+            if (encounteredSlash && (i != length - 1)) { // The != length - 1 is to ensure that argument is captured properly if it ends with a backslash
                 encounteredSlash = false;
                 continue;
             }
@@ -147,6 +145,15 @@ Command parseStringToCommand(char *string_ptr, int length) {
             arg_index++;
             continue;
         };
+
+        if (encounteredChar && (i == length - 1)) { // ie. it's at the last character 
+            // To account for the case where double quotes weren't properly closed
+            
+            endIndex = i + 1; // +1 so that the last character is also included 
+            argv[arg_index] = copySubstring(string_ptr + startIndex, startIndex, endIndex);
+            arg_index++;
+        } 
+
 
         if (isspace(c)) continue; // Ignore all other whitespace
 
@@ -165,6 +172,40 @@ Command parseStringToCommand(char *string_ptr, int length) {
     return cmd;
 }
 
+CommandInfo parseAllCommands(char *string) {
+    int pipe_count = 0;
+
+    for (char *char_ptr = string; *char_ptr != '\0'; char_ptr++) {
+        if (*char_ptr == '|') pipe_count += 1;
+    }
+
+    int command_count = pipe_count + 1;
+    
+    Command *cmds = (Command *) malloc(sizeof(Command) * command_count);
+    int command_index = 0;
+    
+    char *command_ptr = string;
+    int command_len;
+    while (true) {
+        command_len = strcspn(command_ptr, "|");
+        // printf("Parsing Command: %s\n", copySubstring(command_ptr, 0, command_len));
+        cmds[command_index] = parseStringToCommand(command_ptr, command_len);
+
+        command_ptr += (command_len + 1);
+        if (*command_ptr == '\0') {
+            break;
+        }
+
+        command_index++;
+    }
+    
+    CommandInfo cmdInfo;
+    cmdInfo.command_count = command_count;
+    cmdInfo.cmds = cmds;
+
+    return cmdInfo;
+}
+
 int main(int argc, char **argv) {
     // 1) Take in commands from the command-line (have a list of possible commands)
 
@@ -173,11 +214,13 @@ int main(int argc, char **argv) {
     // cat paragraph.txt | grep "word"
     // pwd
 
-    // char *string = "ls -al | grep 'word'";
+    char *string = "ls -al | grep 'word'";
     // char *string = "        ";
-    char *string = " ls -al \'one arg\' h\\ ey";
+    // char *string = " ls -al \'one arg\' h\\ ey";
     // char *string = "ls -al";
 
+    CommandInfo cmdInfo = parseAllCommands(string);
+    displayCommands(cmdInfo.cmds, cmdInfo.command_count);
     // char *substring;
     // substring = copySubstring(string + 3, 3, 5);
 
@@ -185,22 +228,13 @@ int main(int argc, char **argv) {
 
 
     // printf("%d\n", (int) strcspn(string, "|"));
-    Command cmd = parseStringToCommand(string, strlen(string));
-    Command cmds[] = {cmd};
 
-    displayCommands(cmds, 1);
+    // Command cmd = parseStringToCommand(string, strlen(string));
+    // Command cmds[] = {cmd};
+
+    // displayCommands(cmds, 1);
 
     // int length = strlen(string);
-
-    // int pipe_count = 0;
-
-    // for (char *char_ptr = string; *char_ptr != '\0' || *char_ptr != "\n"; char_ptr++) {
-    //     if (*char_ptr == '|') pipe_count += 1;
-    // }
-
-    // int command_count = pipe_count + 1;
-    // char (**commands)[command_count];
-    // int command_index = 0;
 
     
     // char *char_ptr = string; // Start the character pointer at the start of the command string
