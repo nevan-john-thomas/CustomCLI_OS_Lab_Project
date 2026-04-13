@@ -1,0 +1,6 @@
+Welcome to the NS-CLI
+All executables on the System PATH are available for execution!
+You may run commands next to the `> ` symbol. 
+You may also pipe the output from one command into another command (you can chain this infinitely)
+
+The Current Working Directory is: 

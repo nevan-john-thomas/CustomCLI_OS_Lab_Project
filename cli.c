@@ -17,6 +17,7 @@ interprocess communications (e.g. pipes), etc.
 
 #define READ_END 0
 #define WRITE_END 1
+#define INPUT_BUFFER_SIZE 1000
 
 typedef struct Command
 {
@@ -137,7 +138,7 @@ Command ParseStringToCommand(char *string_ptr, int length) {
     }
 
     // Defines the command and allocates memory for the arguments
-    printf("Argc: %d\n", argc);
+    // printf("Argc: %d\n", argc);
     Command cmd;
     cmd.argc = argc;
     
@@ -266,6 +267,33 @@ CommandInfo ParseAllCommands(char *string) {
     cmd_info.command_count = cmd_count;
     cmd_info.cmds = cmds;
 
+    // Final loops to remove empty commands (ie. commands with 0 args)
+    // and to reallocate memory for the remaining commands
+
+    int trimmed_cmd_count = cmd_count;
+    for (int i = 0; i < cmd_count; i++) {
+        Command cmd = cmds[i];
+        if (cmd.argc == 0) trimmed_cmd_count--;
+    }
+    
+    if (trimmed_cmd_count == cmd_count) return cmd_info; 
+    // No empty commands were found, so do not reallocate memory and return as usual
+    
+    Command *trimmed_cmds = (Command *) malloc(sizeof(Command) * trimmed_cmd_count); // Creates a new block of memory
+    
+    int j = 0;
+    for (int i = 0; i < cmd_info.command_count; i++) {
+        Command cmd = cmds[i];
+        if (cmd.argc != 0) {
+            trimmed_cmds[j] = cmds[i];
+            j++;
+        };
+    }
+
+    free(cmds);
+    cmd_info.command_count = trimmed_cmd_count;
+    cmd_info.cmds = trimmed_cmds;
+
     return cmd_info;
 }
 
@@ -336,7 +364,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, boo
 }
 
 void recursive_execute(Command *cmds, int depth, int command_count, int fd_parent[2]) {
-    printf("Entering -> Depth: %d, PID: %d\n", depth, getpid());
+    // printf("Entering -> Depth: %d, PID: %d\n", depth, getpid());
 
     if (depth < (command_count - 2)) { // Recursively run this until only two commands remain
         int fd_child[2];
@@ -358,11 +386,11 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
         }
 
         if (pid == 0) { // Child Process
-            printf("Child -> Depth: %d, PID: %d\n", depth, getpid());
+            // printf("Child -> Depth: %d, PID: %d\n", depth, getpid());
             recursive_execute(cmds, depth + 1, command_count, fd_child);
 
         } else { // Parent Process
-            printf("Waiting for Child -> Depth: %d, PID: %d\n", depth, pid);
+            // printf("Waiting for Child -> Depth: %d, PID: %d\n", depth, pid);
             wait(&status_code); // Wait for the child to finish executing
             
             close(fd_child[WRITE_END]);
@@ -392,7 +420,7 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
             }
         }
     } else {
-        printf("Base Case -> Depth: %d, PID: %d\n", depth, getpid());
+        // printf("Base Case -> Depth: %d, PID: %d\n", depth, getpid());
 
         Command cmd_left = cmds[0];
         Command cmd_right = cmds[1];
@@ -439,49 +467,79 @@ void ExecuteCommands(CommandInfo cmd_info) {
 
     // Simple command execution when chaining results through a pipe isn't required
     if (cmd_count == 1) {
+        Command cmd = cmds[0];
+        if (cmd.argc == 0) return;
+        if (strcmp(cmd.argv[0], "exit") == 0) {
+            printf("Exiting..\n");
+            exit(EXIT_SUCCESS);
+        }
+
         execute_single_command(cmds[0]);
         return;
-    } else if (cmd_count == 2) {
-        execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
+    } 
+
+    pid_t pid;
+    pid = fork();
+
+    int status_code;
+
+    if (pid < 0) {
+        perror("Process Creation Failed!\n");
         return;
-    } else {
-        recursive_execute(cmds, 0, cmd_count, NULL);
     }
 
-    // for (int cmd_index = cmd_count - 2; cmd_index >= 0; cmd_index--) {
-    //     Command cur_cmd = cmds[cmd_index];
+    if (pid == 0) { // Child Process
+        if (cmd_count == 2) {
+            execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
+            return;
+        } else {
+            recursive_execute(cmds, 0, cmd_count, NULL);
+        }
 
-    //     // There must be one child process handling the commands 
-    //     pid_t pid;
-    //     pid = fork();
+        // If this code runs that means execution failed
+        exit(EXIT_FAILURE);
+    } else { // Parent Process
+        wait(&status_code); // Wait for the child to finish executing
+        if (status_code == EXIT_FAILURE) {
+            perror("Error:\n");
+            printf("Command execution failed in the Child Process!\n");
+            return;
+        }
+    }
 
-    //     int status_code;
-
-    //     if (pid < 0) {
-    //         perror("Process Creation Failed!\n");
-    //         return;
-    //     }
-
-    //     if (pid == 0) { // Child Process 
-    //         /*
-    //         The child process must iteratively fork and combine the result of
-    //         */
-
-            
-    //     } else { // Parent Process
-    //         wait(&status_code); // Wait for the child to finish executing
-    //         if (status_code == EXIT_FAILURE) {
-    //             perror("Error:\n");
-    //             printf("Command execution failed in the Child Process!\n");
-    //             return;
-    //         }
-    //     }
-    // }
 }
 
-int main(int argc, char **argv) {
-    // 1) Take in commands from the command-line (have a list of possible commands)
 
+int main(int argc, char **argv) {
+    // Take in commands from the command-line (have a list of possible commands)
+    char buffer_string[INPUT_BUFFER_SIZE];
+
+    static char *pwd_argv[] = {"pwd", NULL};
+    static char *cat_argv[] = {"cat", "welcome.txt", NULL};
+    
+    Command pwd_cmd;
+    pwd_cmd.argc = 1;
+    pwd_cmd.argv = pwd_argv;
+
+    Command cat_cmd;
+    cat_cmd.argc = 1;
+    cat_cmd.argv = cat_argv;
+
+    execute_single_command(cat_cmd);
+    execute_single_command(pwd_cmd);
+    printf("\n");
+
+    while (true) {
+        printf("> ");
+        fgets(buffer_string, INPUT_BUFFER_SIZE, stdin);
+        CommandInfo cmdInfo = ParseAllCommands(buffer_string);
+
+        if (cmdInfo.command_count != 0) {
+            ExecuteCommands(cmdInfo);
+        } else {
+            printf("No command was provided!\n");
+        }
+    }
     // Examples:
     // ls -al
     // cat paragraph.txt | grep "word"
@@ -492,23 +550,23 @@ int main(int argc, char **argv) {
     // whereas the inner array represents the command itself with its respective parameters (as an array of strings)] 
 
     // char *string = "cat paragraph.txt | grep 'Hello World' | grep Hello";
-    // char *string = "echo Hi | xargs echo Hello | xargs echo Goodbye";
-    // char *string = "cat paragraph.txt | wc -w";
-    // char *string = "cat places.txt | wc -w";
-    // char *string = "echo D | xargs echo C | xargs echo B | xargs echo A";
-    // char *string = "echo A";
-    // char *string = "echo Hello | xargs echo Goodbye";
-    // char *string = " grep Hello World";
-    // char *string = "cat paragraph.txt | grep 'Hello World'";
-    // char *string = "cat paragraph.txt";
-    // char *string = "gcc cli.c -o cli";
-    // char *string = "        ";
-    // char *string = " ls -al \'one arg\' h\\ ey";
-    char *string = "ls -al";
+    // string = "echo Hi | xargs echo Hello | xargs echo Goodbye";
+    // string = "cat paragraph.txt | wc -w";
+    // string = "cat places.txt | wc -w";
+    // string = "echo D | xargs echo C | xargs echo B | xargs echo A";
+    // string = "echo A";
+    // string = "echo Hello | xargs echo Goodbye";
+    // string = " grep Hello World";
+    // string = "cat paragraph.txt | grep 'Hello World'";
+    // string = "cat paragraph.txt";
+    // string = "gcc cli.c -o cli";
+    // string = "        ";
+    // string = " ls -al \'one arg\' h\\ ey";
+    // string = "ls -al";
 
-    CommandInfo cmdInfo = ParseAllCommands(string);
+    // CommandInfo cmdInfo = ParseAllCommands(string);
     // printf("cmds pointer size: %lu\n", sizeof(cmdInfo.cmds));
-    display_commands(cmdInfo);
+    // display_commands(cmdInfo);
     // ExecuteCommands(cmdInfo);
 
     // Command *cmds = cmdInfo.cmds;
