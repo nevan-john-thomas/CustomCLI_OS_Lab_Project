@@ -1,5 +1,5 @@
 ---
 triple:          'arm64-apple-darwin'
-binary-path:     '/Users/nevan-thomas/Documents/Uni/Spring 2026/Operating Systems/Lab/lab-project/cli'
+binary-path:     cli
 relocations:     []
 ...

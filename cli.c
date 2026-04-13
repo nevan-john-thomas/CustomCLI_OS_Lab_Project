@@ -15,6 +15,9 @@ interprocess communications (e.g. pipes), etc.
 #include <stdbool.h>
 #include <ctype.h>
 
+#define READ_END 0
+#define WRITE_END 1
+
 typedef struct Command
 {
     int argc;
@@ -28,17 +31,21 @@ typedef struct CommandInfo
     Command *cmds; // Must be NULL pointer terminated regardless so it can be directly passed to the execvp function
 } CommandInfo; 
 
-void displayCommands(Command commands[], int cmd_count) {
+void display_commands(CommandInfo cmdInfo) {
     /*
     Used for debugging purposes to display the parsed commands
-    and their arguments
+    and their arguments.
     */
 
+    int cmd_count = cmdInfo.command_count;
+    Command *commands = cmdInfo.cmds;
+
     printf("Commands:\n");
-    for (int i = 0; i < cmd_count; i++) {
+    for (int i = 0; i < cmd_count; i++) { // Loops through the list of commands
         Command cmd = commands[i];
         int argc = cmd.argc;
-        printf("{");
+
+        printf("{"); // Prints each command on a newline with ` backticks for each argument separated by commas
         for (int j = 0; j < argc; j++) {
             printf("`%s`", cmd.argv[j]);
             if (j != argc - 1) printf(", ");
@@ -48,34 +55,54 @@ void displayCommands(Command commands[], int cmd_count) {
     printf("===\n");
 }
 
-char *copySubstring(char *source, int start_index, int end_index) {
+char* slice_string(char *source, int start_index, int end_index) {
     /*
-    Copies a substring from one string to another and terminates the
-    destination string properly with a null so that it is a valid string.
-    the copied string includes the start but excludes the character at the end index
+    Creates a new substring from a provided source string and terminates the
+    created string properly with a null so that it is valid. (ie. creates a string slice)
+    the new substring includes the start but excludes the character at the end index
     */
+
+    int remaining_str_len = strlen(source + start_index);
     int substr_length = end_index - start_index;
 
+    if (substr_length > remaining_str_len) {
+        end_index = remaining_str_len;
+        substr_length = remaining_str_len;
+    }
+
+
     char *dest = (char *) malloc((sizeof (char) * (substr_length + 1))); 
-    // Allocating memory for the string that's supposed to be here.
+    // Allocating memory for the new substring.
     
-    strncpy(dest, source, substr_length); // dest, source, num bytes
+    strncpy(dest, source + start_index, substr_length); // dest, source, num bytes
     dest[substr_length] = '\0';
 
     return dest;
 }
 
-Command parseStringToCommand(char *string_ptr, int length) {
-    int argc = 0;
-
-    /* 
-    Counts the numbers of arguments in the string
+Command ParseStringToCommand(char *string_ptr, int length) {
+    /*
+    Parses the provided string upto a certain length 
+    into a Command object with the number of arguments
+    and a respective null terminated array with strings
+    representing each argument
     */
+
+    // Calculates the argument count first to allocate the appropriate
+    // amount of memory later
+    int argc = 0;
 
     bool encounteredQuote = false;
     bool encounteredSlash = false;
     bool encounteredChar = false;
 
+    // Loops through the string upto the desired length one time
+    // and determines the number of arguments by incrementing
+    // argc everytime a non-whitespace character is encountered after a series of whitespace characters 
+    // (or at the start) of the string.
+    // It accounts for quotation marks (assuming both open types of quotes are the same) and backslash for passing in spaces
+    // It does this by ignoring whitespaces if a quotation mark was seen and another quotation mark wasn't
+    // 
     for (int i = 0; i < length; i++) {
         char c = string_ptr[i];
 
@@ -99,10 +126,18 @@ Command parseStringToCommand(char *string_ptr, int length) {
         if (c == '\"' || c == '\'') encounteredQuote = !encounteredQuote; 
         // Allows for someone to mix quotes in arguments
 
-        if (c == '\\') encounteredSlash = true;
+        // encounteredSlash must be false always except while processing a single character 
+        // immediately after the \ character was seen in the string
+
+        if (c == '\\' && !encounteredSlash) { 
+            encounteredSlash = true;
+        } else {
+            encounteredSlash = false;
+        }
     }
 
-    // Defines the command and allocates memory for the argument
+    // Defines the command and allocates memory for the arguments
+    printf("Argc: %d\n", argc);
     Command cmd;
     cmd.argc = argc;
     
@@ -123,6 +158,9 @@ Command parseStringToCommand(char *string_ptr, int length) {
     encounteredSlash = false;
     encounteredChar = false;
 
+    // Utilizes the same logic as before (except at the last character incase a quotation mark wasn't closed)
+    // but maintains a record of the start and end of the argument within
+    // the string to create a slice and store it into the argv array 
     int startIndex = 0;
     int endIndex = 0;
     int substr_length = 0;
@@ -141,19 +179,20 @@ Command parseStringToCommand(char *string_ptr, int length) {
             
             // Copy the argument into the string
             endIndex = i;
-            argv[arg_index] = copySubstring(string_ptr + startIndex, startIndex, endIndex);
+
+            char prev_c = string_ptr[endIndex - 1];
+            if (prev_c == '\'' || prev_c == '\"') { 
+                // This is used to account for the fact that the whitespace might follow
+                // after a quotation mark, thereby making the endIndex include it.
+                // This will not raise a segfault because the character at the 0th index can
+                //  never enter this encounteredChar block 
+                endIndex = i - 1;
+            }
+
+            argv[arg_index] = slice_string(string_ptr, startIndex, endIndex);
             arg_index++;
             continue;
         };
-
-        if (encounteredChar && (i == length - 1)) { // ie. it's at the last character 
-            // To account for the case where double quotes weren't properly closed
-            
-            endIndex = i + 1; // +1 so that the last character is also included 
-            argv[arg_index] = copySubstring(string_ptr + startIndex, startIndex, endIndex);
-            arg_index++;
-        } 
-
 
         if (isspace(c)) continue; // Ignore all other whitespace
 
@@ -163,47 +202,281 @@ Command parseStringToCommand(char *string_ptr, int length) {
         }; // Increment argc if this is the first character after a series of whitespace characters
         encounteredChar = true;
 
-        if (c == '\"' || c == '\'') encounteredQuote = !encounteredQuote; 
+        if (encounteredChar && (i == length - 1)) { // ie. it's at the last character 
+            // To account for the case where double quotes weren't properly closed before this point
+            
+            if (c != '\"' && c != '\'') {
+                endIndex = i + 1; // +1 so that the last character is also included
+            } else {
+                endIndex = i; // so that the closing parenthesis isn't included
+            }
+            argv[arg_index] = slice_string(string_ptr, startIndex, endIndex);
+            arg_index++;
+        }
+
+        if ((c == '\"' || c == '\'') && encounteredQuote && !encounteredSlash) {
+            encounteredQuote = false; // So that the closing parenthesis isn't included
+            endIndex = i - 1;
+        } else if ((c == '\"' || c == '\'') && !encounteredQuote && !encounteredSlash) {
+            encounteredQuote = true;
+            startIndex = i + 1; // So that the opening parenthesis isn't included
+        }
         // Allows for someone to mix quotes in arguments
 
-        if (c == '\\') encounteredSlash = true;
+        if (c == '\\' && !encounteredSlash) { 
+            encounteredSlash = true;
+        } else {
+            encounteredSlash = false;
+        }
     }
 
     return cmd;
 }
 
-CommandInfo parseAllCommands(char *string) {
+CommandInfo ParseAllCommands(char *string) {
     int pipe_count = 0;
 
-    for (char *char_ptr = string; *char_ptr != '\0'; char_ptr++) {
-        if (*char_ptr == '|') pipe_count += 1;
+    for (int i = 0; i < strlen(string); i++) {
+        if (string[i] == '|') pipe_count += 1;
     }
 
-    int command_count = pipe_count + 1;
+    int cmd_count = pipe_count + 1;
     
-    Command *cmds = (Command *) malloc(sizeof(Command) * command_count);
-    int command_index = 0;
+    Command *cmds = (Command *) malloc(sizeof(Command) * cmd_count);
+    int cmd_index = 0;
     
-    char *command_ptr = string;
-    int command_len;
+    char *cmd_ptr = string;
+    int cmd_len;
     while (true) {
-        command_len = strcspn(command_ptr, "|");
-        // printf("Parsing Command: %s\n", copySubstring(command_ptr, 0, command_len));
-        cmds[command_index] = parseStringToCommand(command_ptr, command_len);
+        cmd_len = strcspn(cmd_ptr, "|");
+        // printf("Cmd Len: %d, Str Len: %lu, Parsing Command: %s\n", cmd_len, strlen(cmd_ptr), slice_string(cmd_ptr, 0, cmd_len));
+        cmds[cmd_index] = ParseStringToCommand(cmd_ptr, cmd_len);
 
-        command_ptr += (command_len + 1);
-        if (*command_ptr == '\0') {
+        cmd_ptr += cmd_len;
+        if (*cmd_ptr == '\0') {
             break;
+        } if (*cmd_ptr == '|') {
+            cmd_ptr++;
         }
 
-        command_index++;
+        cmd_index++;
     }
     
-    CommandInfo cmdInfo;
-    cmdInfo.command_count = command_count;
-    cmdInfo.cmds = cmds;
+    CommandInfo cmd_info;
+    cmd_info.command_count = cmd_count;
+    cmd_info.cmds = cmds;
 
-    return cmdInfo;
+    return cmd_info;
+}
+
+void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, bool directOutput, int fd_parent[2]) {
+    /*
+    This must be a child process because the piped output must also be executed
+    and that would kill the program if this was not a fork
+    fd_parent represents the file descriptor of the parent to direct 
+    the output to if required.
+    */
+
+    int fd_child[2];
+    if (pipe(fd_child) == -1) {
+        printf("Failed to create a pipe!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    pid_t pid;
+    pid = fork();
+
+    int status_code;
+
+    if (pid < 0) {
+        printf("Process creation failed!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (pid == 0) {
+        // Child process
+        close(fd_child[READ_END]);
+        dup2(fd_child[WRITE_END], STDOUT_FILENO);
+        // execlp("cat", "cat", "file.txt", NULL);
+
+        char **argv = cmd_left.argv;
+        char *file = argv[0];
+
+        execvp(file, argv);
+
+        perror("Command execution failed!\n");
+
+        close(fd_child[WRITE_END]);
+        exit(EXIT_FAILURE);
+    } else {
+        // Parent process
+        wait(&status_code);
+        close(fd_child[WRITE_END]);
+        dup2(fd_child[READ_END], STDIN_FILENO);
+        
+        if (directOutput) {
+            close(fd_parent[READ_END]);
+            dup2(fd_parent[WRITE_END], STDOUT_FILENO);
+        }
+
+        char **argv = cmd_right.argv;
+        char *file = argv[0];
+
+        execvp(file, argv);
+
+        perror("Command execution failed!\n");
+
+        if (directOutput) {
+            close(fd_parent[WRITE_END]);
+        }
+
+        close(fd_child[READ_END]);
+        exit(EXIT_FAILURE);
+    }
+}
+
+void recursive_execute(Command *cmds, int depth, int command_count, int fd_parent[2]) {
+    printf("Entering -> Depth: %d, PID: %d\n", depth, getpid());
+
+    if (depth < (command_count - 2)) { // Recursively run this until only two commands remain
+        int fd_child[2];
+        if (pipe(fd_child) == -1) {
+            printf("Failed to create a pipe!\n");
+            exit(EXIT_FAILURE);
+        }
+
+        Command cmd_right = cmds[command_count - depth - 1];
+
+        pid_t pid;
+        pid = fork();
+
+        int status_code;
+
+        if (pid < 0) {
+            perror("Process Creation Failed!\n");
+            return;
+        }
+
+        if (pid == 0) { // Child Process
+            printf("Child -> Depth: %d, PID: %d\n", depth, getpid());
+            recursive_execute(cmds, depth + 1, command_count, fd_child);
+
+        } else { // Parent Process
+            printf("Waiting for Child -> Depth: %d, PID: %d\n", depth, pid);
+            wait(&status_code); // Wait for the child to finish executing
+            
+            close(fd_child[WRITE_END]);
+            dup2(fd_child[READ_END], STDIN_FILENO);
+
+            if (depth != 0) {
+                close(fd_parent[READ_END]);
+                dup2(fd_parent[WRITE_END], STDOUT_FILENO);
+            }
+
+            char **argv = cmd_right.argv;
+            char *file = argv[0];
+
+            execvp(file, argv);
+
+            perror("Command execution failed!\n");
+            
+            if (depth != 0) close(fd_parent[WRITE_END]);
+
+            close(fd_child[READ_END]);
+            exit(EXIT_FAILURE);
+
+            if (status_code == EXIT_FAILURE) {
+                perror("Error:\n");
+                printf("Command execution failed in the Child Process!\n");
+                return;
+            }
+        }
+    } else {
+        printf("Base Case -> Depth: %d, PID: %d\n", depth, getpid());
+
+        Command cmd_left = cmds[0];
+        Command cmd_right = cmds[1];
+        
+        execute_commands_and_direct_output(
+            cmd_left, cmd_right, true, fd_parent
+        );
+    }
+}
+
+void execute_single_command(Command cmd) {
+    pid_t pid;
+    pid = fork();
+
+    int status_code;
+
+    if (pid < 0) {
+        perror("Process Creation Failed!\n");
+        return;
+    }
+
+    if (pid == 0) { // Child Process
+        // printf("In Child Process:\n");
+        char **argv = cmd.argv;
+        char *file = argv[0];
+
+        execvp(file, argv);
+
+        // If this code runs that means execution failed
+        exit(EXIT_FAILURE);
+    } else { // Parent Process
+        wait(&status_code); // Wait for the child to finish executing
+        if (status_code == EXIT_FAILURE) {
+            perror("Error:\n");
+            printf("Command execution failed in the Child Process!\n");
+            return;
+        }
+    }
+}
+
+void ExecuteCommands(CommandInfo cmd_info) {
+    int cmd_count = cmd_info.command_count;
+    Command *cmds = cmd_info.cmds;
+
+    // Simple command execution when chaining results through a pipe isn't required
+    if (cmd_count == 1) {
+        execute_single_command(cmds[0]);
+        return;
+    } else if (cmd_count == 2) {
+        execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
+        return;
+    } else {
+        recursive_execute(cmds, 0, cmd_count, NULL);
+    }
+
+    // for (int cmd_index = cmd_count - 2; cmd_index >= 0; cmd_index--) {
+    //     Command cur_cmd = cmds[cmd_index];
+
+    //     // There must be one child process handling the commands 
+    //     pid_t pid;
+    //     pid = fork();
+
+    //     int status_code;
+
+    //     if (pid < 0) {
+    //         perror("Process Creation Failed!\n");
+    //         return;
+    //     }
+
+    //     if (pid == 0) { // Child Process 
+    //         /*
+    //         The child process must iteratively fork and combine the result of
+    //         */
+
+            
+    //     } else { // Parent Process
+    //         wait(&status_code); // Wait for the child to finish executing
+    //         if (status_code == EXIT_FAILURE) {
+    //             perror("Error:\n");
+    //             printf("Command execution failed in the Child Process!\n");
+    //             return;
+    //         }
+    //     }
+    // }
 }
 
 int main(int argc, char **argv) {
@@ -214,29 +487,48 @@ int main(int argc, char **argv) {
     // cat paragraph.txt | grep "word"
     // pwd
 
-    char *string = "ls -al | grep 'word'";
+    // 2) Parse the string, create an array of arrays of strings
+    // [The outer array logically represents the commands to be executed and piped together, 
+    // whereas the inner array represents the command itself with its respective parameters (as an array of strings)] 
+
+    // char *string = "cat paragraph.txt | grep 'Hello World' | grep Hello";
+    // char *string = "echo Hi | xargs echo Hello | xargs echo Goodbye";
+    // char *string = "cat paragraph.txt | wc -w";
+    // char *string = "cat places.txt | wc -w";
+    // char *string = "echo D | xargs echo C | xargs echo B | xargs echo A";
+    // char *string = "echo A";
+    // char *string = "echo Hello | xargs echo Goodbye";
+    // char *string = " grep Hello World";
+    // char *string = "cat paragraph.txt | grep 'Hello World'";
+    // char *string = "cat paragraph.txt";
+    // char *string = "gcc cli.c -o cli";
     // char *string = "        ";
     // char *string = " ls -al \'one arg\' h\\ ey";
-    // char *string = "ls -al";
+    char *string = "ls -al";
 
-    CommandInfo cmdInfo = parseAllCommands(string);
-    displayCommands(cmdInfo.cmds, cmdInfo.command_count);
+    CommandInfo cmdInfo = ParseAllCommands(string);
+    // printf("cmds pointer size: %lu\n", sizeof(cmdInfo.cmds));
+    display_commands(cmdInfo);
+    // ExecuteCommands(cmdInfo);
+
+    // Command *cmds = cmdInfo.cmds;
+    // execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
+
+    // execute_single_command(cmdInfo.cmds[0]);
     // char *substring;
-    // substring = copySubstring(string + 3, 3, 5);
+    // substring = sliceString(string + 3, 3, 5);
 
     // printf("%s\n", substring);
 
 
     // printf("%d\n", (int) strcspn(string, "|"));
 
-    // Command cmd = parseStringToCommand(string, strlen(string));
+    // Command cmd = ParseStringToCommand(string, strlen(string));
     // Command cmds[] = {cmd};
 
-    // displayCommands(cmds, 1);
+    // display_commands(cmds, 1);
 
     // int length = strlen(string);
-
-    
     // char *char_ptr = string; // Start the character pointer at the start of the command string
     // for (int i = 0; i < command_count; i++) {
 
@@ -252,23 +544,8 @@ int main(int argc, char **argv) {
     //     char (*command)[whitespace_count];
     // }
 
-// Function	Description
-// memchr()	Returns a pointer to the first occurrence of a value in a block of memory
-// memcmp()	Compares two blocks of memory to determine which one represents a larger numeric value
-// memcpy()	Copies data from one block of memory to another
-// memmove()	Copies data from one block of memory to another accounting for the possibility that the blocks of memory overlap
-// memset()	Sets all of the bytes in a block of memory to the same value
-// strcat()	Appends one string to the end of another
-// strchr()	Returns a pointer to the first occurrence of a character in a string
-// strcmp()	Compares the ASCII values of characters in two strings to determine which string has a higher value
-// strcoll()	Compares the locale-based values of characters in two strings to determine which string has a higher value
-// strcpy()	Copies the characters of a string into the memory of another string
-// strcspn() 	Returns the length of a string up to the first occurrence of one of the specified characters
-// strlen() Return the length of a string
 
-    // 2) Parse the string, create an array of arrays of strings
-    // [The outer array logically represents the commands to be executed and piped together, 
-    // whereas the inner array represents the command itself with its respective parameters (as an array of strings)] 
+
 
     // printf("Args: %d\n", argc);
     // for (int i = 0; i < argc; i++) {
@@ -276,7 +553,6 @@ int main(int argc, char **argv) {
     // }
     // printf("\n");
 
-    // 3) Keep track of the number of pipe operators
     // 4) Check if the commands are valid (ie. within the list of 15 accepted commands)
     // Keep the parent process strictly for input -> fork within the child process for each pipe operator 
     // The topmost child process should resolve the (pipe-count - 1)'th command and the first command should be resolved by the pipe-count'th child
