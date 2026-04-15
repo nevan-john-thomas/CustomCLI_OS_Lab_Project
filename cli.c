@@ -1,6 +1,10 @@
 /* 
-NS CLI
-by Nevan John Thomas - 100064872 & Salaheddine Metnani - 100064666
+Phase1-Local CLI Shell: In this phase, you have to develop using C your own shell/CLI that
+replicates features from the linux one such as ls, ls-l, pwd, mkdir, rm, | , … or a program to
+execute including its name. You should implement at least 15 commands and should include
+the composed commands including 1 pipe (…|…), 2 pipes (…|…|…) and 3 pipes (…|…|…|…).
+You can use the techniques that you have learned about creating processes (e.g. fork, excec),
+interprocess communications (e.g. pipes), etc.
 */
 
 #include <stdio.h>
@@ -505,6 +509,7 @@ void ExecuteCommands(CommandInfo cmd_info) {
 
 }
 
+
 int main(int argc, char **argv) {
     // Take in commands from the command-line (have a list of possible commands)
     char buffer_string[INPUT_BUFFER_SIZE];
@@ -512,7 +517,6 @@ int main(int argc, char **argv) {
     static char *pwd_argv[] = {"pwd", NULL};
     static char *cat_argv[] = {"cat", "welcome.txt", NULL};
     
-    // Run basic commands to provide descriptions for the user
     Command pwd_cmd;
     pwd_cmd.argc = 1;
     pwd_cmd.argv = pwd_argv;
@@ -525,8 +529,6 @@ int main(int argc, char **argv) {
     execute_single_command(pwd_cmd);
     printf("\n");
 
-    // Main loop - receives user input and consistently spawns processes as required
-    // to keep the main loop running
     while (true) {
         printf("> ");
         fgets(buffer_string, INPUT_BUFFER_SIZE, stdin);
@@ -538,6 +540,81 @@ int main(int argc, char **argv) {
             printf("No command was provided!\n");
         }
     }
+    // Examples:
+    // ls -al
+    // cat paragraph.txt | grep "word"
+    // pwd
+
+    // 2) Parse the string, create an array of arrays of strings
+    // [The outer array logically represents the commands to be executed and piped together, 
+    // whereas the inner array represents the command itself with its respective parameters (as an array of strings)] 
+
+    // char *string = "cat paragraph.txt | grep 'Hello World' | grep Hello";
+    // string = "echo Hi | xargs echo Hello | xargs echo Goodbye";
+    // string = "cat paragraph.txt | wc -w";
+    // string = "cat places.txt | wc -w";
+    // string = "echo D | xargs echo C | xargs echo B | xargs echo A";
+    // string = "echo A";
+    // string = "echo Hello | xargs echo Goodbye";
+    // string = " grep Hello World";
+    // string = "cat paragraph.txt | grep 'Hello World'";
+    // string = "cat paragraph.txt";
+    // string = "gcc cli.c -o cli";
+    // string = "        ";
+    // string = " ls -al \'one arg\' h\\ ey";
+    // string = "ls -al";
+
+    // CommandInfo cmdInfo = ParseAllCommands(string);
+    // printf("cmds pointer size: %lu\n", sizeof(cmdInfo.cmds));
+    // display_commands(cmdInfo);
+    // ExecuteCommands(cmdInfo);
+
+    // Command *cmds = cmdInfo.cmds;
+    // execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
+
+    // execute_single_command(cmdInfo.cmds[0]);
+    // char *substring;
+    // substring = sliceString(string + 3, 3, 5);
+
+    // printf("%s\n", substring);
+
+
+    // printf("%d\n", (int) strcspn(string, "|"));
+
+    // Command cmd = ParseStringToCommand(string, strlen(string));
+    // Command cmds[] = {cmd};
+
+    // display_commands(cmds, 1);
+
+    // int length = strlen(string);
+    // char *char_ptr = string; // Start the character pointer at the start of the command string
+    // for (int i = 0; i < command_count; i++) {
+
+    //     int whitespace_count = 0;
+
+    //     // Counts the number of whitespace characters in the command before breaking it apart
+    //     for (char *command_ptr = char_ptr; 
+    //         (*command_ptr != '|' || *command_ptr != '\0'); 
+    //         command_ptr++) {
+    //         if (isWhitespace(command_ptr)) pipe_count += 1;
+    //     }
+
+    //     char (*command)[whitespace_count];
+    // }
+
+
+
+
+    // printf("Args: %d\n", argc);
+    // for (int i = 0; i < argc; i++) {
+    //     printf("%s ", argv[i]);
+    // }
+    // printf("\n");
+
+    // 4) Check if the commands are valid (ie. within the list of 15 accepted commands)
+    // Keep the parent process strictly for input -> fork within the child process for each pipe operator 
+    // The topmost child process should resolve the (pipe-count - 1)'th command and the first command should be resolved by the pipe-count'th child
+    // Create a function to run a command with given arguments -> fork the current process and run execv() on the child
 
     return 0;
 }
