@@ -461,17 +461,29 @@ void execute_single_command(Command cmd) {
     }
 }
 
+void handle_builtin_commands(Command cmd) {
+
+}
+
 void ExecuteCommands(CommandInfo cmd_info) {
     int cmd_count = cmd_info.command_count;
     Command *cmds = cmd_info.cmds;
 
     // Simple command execution when chaining results through a pipe isn't required
+    // Handles certain built-in commands as well
     if (cmd_count == 1) {
         Command cmd = cmds[0];
         if (cmd.argc == 0) return;
         if (strcmp(cmd.argv[0], "exit") == 0) {
             printf("Exiting..\n");
             exit(EXIT_SUCCESS);
+        } else if (strcmp(cmd.argv[0], "cd") == 0) {
+            if (cmd.argc != 2) {
+                printf("`cd` takes in exactly one argument!\n");
+                return;
+            }
+            chdir(cmd.argv[1]);
+            return;
         }
 
         execute_single_command(cmds[0]);
@@ -509,6 +521,34 @@ void ExecuteCommands(CommandInfo cmd_info) {
 
 }
 
+void free_command_memory(Command cmd) {
+    // Deallocates the memory associated with the argument value strings
+    // that were copied and stored in the argv array after parsing the command, 
+    // and the memory allocated for the argument argv array of pointers itself.
+
+    for (int i = 0; i < cmd.argc; i++) {
+        free(cmd.argv[i]); // Free memory for each argv string
+        cmd.argv[i] = NULL;
+    }
+
+    free(cmd.argv); // Free memory for argv string pointers
+    cmd.argc = 0;
+    cmd.argv = NULL;
+}
+
+void free_commands_array_memory(CommandInfo cmd_info) {
+    // Frees memory for an array of commands
+    // and frees any memory acquired for the creation of each
+    // individual command as well.
+
+    for (int i = 0; i < cmd_info.command_count; i++) {
+        free_command_memory(cmd_info.cmds[i]);
+    }
+
+    free(cmd_info.cmds);
+    cmd_info.command_count = 0;
+    cmd_info.cmds = NULL;
+}
 
 int main(int argc, char **argv) {
     // Take in commands from the command-line (have a list of possible commands)
@@ -536,6 +576,7 @@ int main(int argc, char **argv) {
 
         if (cmdInfo.command_count != 0) {
             ExecuteCommands(cmdInfo);
+            free_commands_array_memory(cmdInfo);
         } else {
             printf("No command was provided!\n");
         }
