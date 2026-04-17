@@ -14,23 +14,8 @@ interprocess communications (e.g. pipes), etc.
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
-
-#define READ_END 0
-#define WRITE_END 1
-#define INPUT_BUFFER_SIZE 1000
-
-typedef struct Command
-{
-    int argc;
-    char **argv; // Must be NULL pointer terminated regardless so it can be directly passed to the execvp function
-} Command; 
-// Represents a single command passed into the custom shell
-
-typedef struct CommandInfo
-{
-    int command_count;
-    Command *cmds; // Must be NULL pointer terminated regardless so it can be directly passed to the execvp function
-} CommandInfo; 
+#include <sys/ioctl.h>
+#include "cli.h"
 
 void display_commands(CommandInfo cmdInfo) {
     /*
@@ -297,12 +282,12 @@ CommandInfo ParseAllCommands(char *string) {
     return cmd_info;
 }
 
-void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, bool directOutput, int fd_parent[2]) {
+void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, int fd_parent[2]) {
     /*
     This must be a child process because the piped output must also be executed
     and that would kill the program if this was not a fork
     fd_parent represents the file descriptor of the parent to direct 
-    the output to if required.
+    the output to if required (fd_parent can be NULL).
     */
 
     int fd_child[2];
@@ -342,7 +327,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, boo
         close(fd_child[WRITE_END]);
         dup2(fd_child[READ_END], STDIN_FILENO);
         
-        if (directOutput) {
+        if (fd_parent != NULL) {
             close(fd_parent[READ_END]);
             dup2(fd_parent[WRITE_END], STDOUT_FILENO);
         }
@@ -354,7 +339,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, boo
 
         perror("Command execution failed!\n");
 
-        if (directOutput) {
+        if (fd_parent != NULL) {
             close(fd_parent[WRITE_END]);
         }
 
@@ -396,7 +381,7 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
             close(fd_child[WRITE_END]);
             dup2(fd_child[READ_END], STDIN_FILENO);
 
-            if (depth != 0) {
+            if (fd_parent != NULL) {
                 close(fd_parent[READ_END]);
                 dup2(fd_parent[WRITE_END], STDOUT_FILENO);
             }
@@ -408,7 +393,7 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
 
             perror("Command execution failed!\n");
             
-            if (depth != 0) close(fd_parent[WRITE_END]);
+            if (fd_parent != NULL) close(fd_parent[WRITE_END]);
 
             close(fd_child[READ_END]);
             exit(EXIT_FAILURE);
@@ -426,12 +411,12 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
         Command cmd_right = cmds[1];
         
         execute_commands_and_direct_output(
-            cmd_left, cmd_right, true, fd_parent
+            cmd_left, cmd_right, fd_parent
         );
     }
 }
 
-void execute_single_command(Command cmd) {
+void execute_single_command(Command cmd, int fd_parent[2]) {
     pid_t pid;
     pid = fork();
 
@@ -447,9 +432,15 @@ void execute_single_command(Command cmd) {
         char **argv = cmd.argv;
         char *file = argv[0];
 
+        if (fd_parent != NULL) {
+            close(fd_parent[READ_END]);
+            dup2(fd_parent[WRITE_END], STDOUT_FILENO);
+        }
+
         execvp(file, argv);
 
         // If this code runs that means execution failed
+        if (fd_parent != NULL) close(fd_parent[WRITE_END]);
         exit(EXIT_FAILURE);
     } else { // Parent Process
         wait(&status_code); // Wait for the child to finish executing
@@ -461,11 +452,7 @@ void execute_single_command(Command cmd) {
     }
 }
 
-void handle_builtin_commands(Command cmd) {
-
-}
-
-void ExecuteCommands(CommandInfo cmd_info) {
+void ExecuteCommands(CommandInfo cmd_info, int server_pipe_fd[2]) {
     int cmd_count = cmd_info.command_count;
     Command *cmds = cmd_info.cmds;
 
@@ -486,7 +473,7 @@ void ExecuteCommands(CommandInfo cmd_info) {
             return;
         }
 
-        execute_single_command(cmds[0]);
+        execute_single_command(cmds[0], server_pipe_fd);
         return;
     } 
 
@@ -502,16 +489,17 @@ void ExecuteCommands(CommandInfo cmd_info) {
 
     if (pid == 0) { // Child Process
         if (cmd_count == 2) {
-            execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
+            execute_commands_and_direct_output(cmds[0], cmds[1], server_pipe_fd);
             return;
         } else {
-            recursive_execute(cmds, 0, cmd_count, NULL);
+            recursive_execute(cmds, 0, cmd_count, server_pipe_fd);
         }
 
         // If this code runs that means execution failed
         exit(EXIT_FAILURE);
     } else { // Parent Process
-        wait(&status_code); // Wait for the child to finish executing
+        wait(&status_code); // Wait for the child to finish executing 
+
         if (status_code == EXIT_FAILURE) {
             perror("Error:\n");
             printf("Command execution failed in the Child Process!\n");
@@ -550,112 +538,127 @@ void free_commands_array_memory(CommandInfo cmd_info) {
     cmd_info.cmds = NULL;
 }
 
-int main(int argc, char **argv) {
-    // Take in commands from the command-line (have a list of possible commands)
-    char buffer_string[INPUT_BUFFER_SIZE];
+// int main(int argc, char **argv) {
+//     // Take in commands from the command-line (have a list of possible commands)
+//     char buffer_string[INPUT_BUFFER_SIZE];
 
-    static char *pwd_argv[] = {"pwd", NULL};
-    static char *cat_argv[] = {"cat", "welcome.txt", NULL};
+//     static char *pwd_argv[] = {"pwd", NULL};
+//     static char *cat_argv[] = {"cat", "welcome.txt", NULL};
     
-    Command pwd_cmd;
-    pwd_cmd.argc = 1;
-    pwd_cmd.argv = pwd_argv;
+//     Command pwd_cmd;
+//     pwd_cmd.argc = 1;
+//     pwd_cmd.argv = pwd_argv;
 
-    Command cat_cmd;
-    cat_cmd.argc = 1;
-    cat_cmd.argv = cat_argv;
+//     Command cat_cmd;
+//     cat_cmd.argc = 1;
+//     cat_cmd.argv = cat_argv;
 
-    execute_single_command(cat_cmd);
-    execute_single_command(pwd_cmd);
-    printf("\n");
+//     execute_single_command(cat_cmd, NULL);
+//     execute_single_command(pwd_cmd, NULL);
+//     printf("\n");
 
-    while (true) {
-        printf("> ");
-        fgets(buffer_string, INPUT_BUFFER_SIZE, stdin);
-        CommandInfo cmdInfo = ParseAllCommands(buffer_string);
+//     while (true) {
+//         printf("> ");
+//         fgets(buffer_string, INPUT_BUFFER_SIZE, stdin);
+//         CommandInfo cmdInfo = ParseAllCommands(buffer_string);
 
-        if (cmdInfo.command_count != 0) {
-            ExecuteCommands(cmdInfo);
-            free_commands_array_memory(cmdInfo);
-        } else {
-            printf("No command was provided!\n");
-        }
-    }
-    // Examples:
-    // ls -al
-    // cat paragraph.txt | grep "word"
-    // pwd
+//         if (cmdInfo.command_count != 0) {
+//             ExecuteCommands(cmdInfo, NULL);
+//             free_commands_array_memory(cmdInfo);
+//         } else {
+//             printf("No command was provided!\n");
+//         }
+//     }
 
-    // 2) Parse the string, create an array of arrays of strings
-    // [The outer array logically represents the commands to be executed and piped together, 
-    // whereas the inner array represents the command itself with its respective parameters (as an array of strings)] 
+//     // if (server_write_pipe_fd != NULL) {
+        
+//     //     int bytes_available;
+//     //     if (ioctl(server_write_pipe_fd[READ_END], FIONREAD, &bytes_available) < 0) {
+//     //         // Handle error
+//     //         perror("Error:\n");
+//     //         exit(EXIT_FAILURE);
+//     //     }
 
-    // char *string = "cat paragraph.txt | grep 'Hello World' | grep Hello";
-    // string = "echo Hi | xargs echo Hello | xargs echo Goodbye";
-    // string = "cat paragraph.txt | wc -w";
-    // string = "cat places.txt | wc -w";
-    // string = "echo D | xargs echo C | xargs echo B | xargs echo A";
-    // string = "echo A";
-    // string = "echo Hello | xargs echo Goodbye";
-    // string = " grep Hello World";
-    // string = "cat paragraph.txt | grep 'Hello World'";
-    // string = "cat paragraph.txt";
-    // string = "gcc cli.c -o cli";
-    // string = "        ";
-    // string = " ls -al \'one arg\' h\\ ey";
-    // string = "ls -al";
+//     //     char result_string[bytes_available];
+//     //     printf("The resulting string has a size of %d bytes.\n", bytes_available);
+//     //     printf("%s", result_string);
+//     // }
 
-    // CommandInfo cmdInfo = ParseAllCommands(string);
-    // printf("cmds pointer size: %lu\n", sizeof(cmdInfo.cmds));
-    // display_commands(cmdInfo);
-    // ExecuteCommands(cmdInfo);
+//     // Examples:
+//     // ls -al
+//     // cat paragraph.txt | grep "word"
+//     // pwd
 
-    // Command *cmds = cmdInfo.cmds;
-    // execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
+//     // 2) Parse the string, create an array of arrays of strings
+//     // [The outer array logically represents the commands to be executed and piped together, 
+//     // whereas the inner array represents the command itself with its respective parameters (as an array of strings)] 
 
-    // execute_single_command(cmdInfo.cmds[0]);
-    // char *substring;
-    // substring = sliceString(string + 3, 3, 5);
+//     // char *string = "cat paragraph.txt | grep 'Hello World' | grep Hello";
+//     // string = "echo Hi | xargs echo Hello | xargs echo Goodbye";
+//     // string = "cat paragraph.txt | wc -w";
+//     // string = "cat places.txt | wc -w";
+//     // string = "echo D | xargs echo C | xargs echo B | xargs echo A";
+//     // string = "echo A";
+//     // string = "echo Hello | xargs echo Goodbye";
+//     // string = " grep Hello World";
+//     // string = "cat paragraph.txt | grep 'Hello World'";
+//     // string = "cat paragraph.txt";
+//     // string = "gcc cli.c -o cli";
+//     // string = "        ";
+//     // string = " ls -al \'one arg\' h\\ ey";
+//     // string = "ls -al";
 
-    // printf("%s\n", substring);
+//     // CommandInfo cmdInfo = ParseAllCommands(string);
+//     // printf("cmds pointer size: %lu\n", sizeof(cmdInfo.cmds));
+//     // display_commands(cmdInfo);
+//     // ExecuteCommands(cmdInfo);
 
+//     // Command *cmds = cmdInfo.cmds;
+//     // execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
 
-    // printf("%d\n", (int) strcspn(string, "|"));
+//     // execute_single_command(cmdInfo.cmds[0]);
+//     // char *substring;
+//     // substring = sliceString(string + 3, 3, 5);
 
-    // Command cmd = ParseStringToCommand(string, strlen(string));
-    // Command cmds[] = {cmd};
-
-    // display_commands(cmds, 1);
-
-    // int length = strlen(string);
-    // char *char_ptr = string; // Start the character pointer at the start of the command string
-    // for (int i = 0; i < command_count; i++) {
-
-    //     int whitespace_count = 0;
-
-    //     // Counts the number of whitespace characters in the command before breaking it apart
-    //     for (char *command_ptr = char_ptr; 
-    //         (*command_ptr != '|' || *command_ptr != '\0'); 
-    //         command_ptr++) {
-    //         if (isWhitespace(command_ptr)) pipe_count += 1;
-    //     }
-
-    //     char (*command)[whitespace_count];
-    // }
+//     // printf("%s\n", substring);
 
 
+//     // printf("%d\n", (int) strcspn(string, "|"));
+
+//     // Command cmd = ParseStringToCommand(string, strlen(string));
+//     // Command cmds[] = {cmd};
+
+//     // display_commands(cmds, 1);
+
+//     // int length = strlen(string);
+//     // char *char_ptr = string; // Start the character pointer at the start of the command string
+//     // for (int i = 0; i < command_count; i++) {
+
+//     //     int whitespace_count = 0;
+
+//     //     // Counts the number of whitespace characters in the command before breaking it apart
+//     //     for (char *command_ptr = char_ptr; 
+//     //         (*command_ptr != '|' || *command_ptr != '\0'); 
+//     //         command_ptr++) {
+//     //         if (isWhitespace(command_ptr)) pipe_count += 1;
+//     //     }
+
+//     //     char (*command)[whitespace_count];
+//     // }
 
 
-    // printf("Args: %d\n", argc);
-    // for (int i = 0; i < argc; i++) {
-    //     printf("%s ", argv[i]);
-    // }
-    // printf("\n");
 
-    // 4) Check if the commands are valid (ie. within the list of 15 accepted commands)
-    // Keep the parent process strictly for input -> fork within the child process for each pipe operator 
-    // The topmost child process should resolve the (pipe-count - 1)'th command and the first command should be resolved by the pipe-count'th child
-    // Create a function to run a command with given arguments -> fork the current process and run execv() on the child
 
-    return 0;
-}
+//     // printf("Args: %d\n", argc);
+//     // for (int i = 0; i < argc; i++) {
+//     //     printf("%s ", argv[i]);
+//     // }
+//     // printf("\n");
+
+//     // 4) Check if the commands are valid (ie. within the list of 15 accepted commands)
+//     // Keep the parent process strictly for input -> fork within the child process for each pipe operator 
+//     // The topmost child process should resolve the (pipe-count - 1)'th command and the first command should be resolved by the pipe-count'th child
+//     // Create a function to run a command with given arguments -> fork the current process and run execv() on the child
+
+//     return 0;
+// }
