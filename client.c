@@ -11,7 +11,14 @@
 
 bool display_server_output_and_transmit_permission(int socket_connection) {
     int bytes_to_receive;
-    read(socket_connection, &bytes_to_receive, sizeof(int));
+    // read() returns 0 when the server closes the connection.
+    // Without this check the client loops forever printing garbage.
+    int bytes_read = read(socket_connection, &bytes_to_receive, sizeof(int));
+    if (bytes_read <= 0) {
+        printf("\nServer closed the connection.\n");
+        close(socket_connection);
+        exit(EXIT_SUCCESS); // Exit the client cleanly
+    }
 
     char server_output[bytes_to_receive];
     read(socket_connection, server_output, sizeof(char) * bytes_to_receive);
@@ -30,7 +37,7 @@ int main(int argc, char **argv) {
     client_socket = socket(AF_INET, SOCK_STREAM, 0); 
     printf("Socket object created!\n");
     
-    if (client_socket == 0) {
+    if (client_socket < 0) {
         perror("Socket Creation Failed:\n");
         close(client_socket);
         exit(EXIT_FAILURE);

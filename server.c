@@ -28,10 +28,10 @@ void send_size_and_string_to_client(int socket_connection, char *string, int byt
 
     // Send the size first so that the client can prepare a buffer for the resulting text
     send(socket_connection, &bytes, sizeof(int), 0); 
-    sleep(1); // Wait so that the client can process the information
+    //sleep(1); // Wait so that the client can process the information
 
     send(socket_connection, string, bytes, 0); // Send the actual text afterward
-    sleep(1);
+    //sleep(1);
     
     send(socket_connection, &canTransmit, sizeof(bool), 0); 
     // Sends whether the client can transmit their own messages over the socket after this message
@@ -47,8 +47,10 @@ void read_pipe_and_client_forward(int server_output_pipe[2], int socket_connecti
         exit(EXIT_FAILURE);
     }
 
-    char result_string[bytes_available];
-    send_size_and_string_to_client(socket_connection, result_string, bytes_available, canTransmit);
+    char result_string[bytes_available+1]; //+1 to account for the null terminator
+    read(server_output_pipe[READ_END], result_string, sizeof(char) * bytes_available);
+    result_string[bytes_available] = '\0'; // Null terminate the string
+    send_size_and_string_to_client(socket_connection, result_string, bytes_available + 1, canTransmit);
     close(server_output_pipe[READ_END]);
 }
 
@@ -92,6 +94,18 @@ void run_cli(int socket_connection) {
         read(socket_connection, buffer_string, INPUT_BUFFER_SIZE);
         // fgets(buffer_string, INPUT_BUFFER_SIZE, stdin);
 
+        // Check for the exit command first so that the server can exit before doing any other processing
+        // Ensures that server resources aren't wasted on processing the exit command, 
+        // client receives a response and the server doesnt close after session termination
+
+        buffer_string[strcspn(buffer_string, "\n")] = '\0';
+
+        if (strcmp(buffer_string, "exit") == 0) {
+             char exit_msg[] = "Exiting..\n";
+             send_size_and_string_to_client(socket_connection, exit_msg, sizeof(char) * (strlen(exit_msg) + 1), false);
+             close(socket_connection); 
+             return;                // Return to main() — server stays running
+    }
         CommandInfo cmdInfo = ParseAllCommands(buffer_string);
 
         if (cmdInfo.command_count != 0) {
@@ -116,7 +130,7 @@ int main(int argc, char **argv) {
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
     printf("Socket object created!\n");
     
-    if (server_socket == 0) {
+    if (server_socket < 0) {
         perror("Socket Creation Failed:\n");
         close(server_socket);
         exit(EXIT_FAILURE);

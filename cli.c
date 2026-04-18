@@ -15,7 +15,9 @@ interprocess communications (e.g. pipes), etc.
 #include <stdbool.h>
 #include <ctype.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include "cli.h"
+
 
 void display_commands(CommandInfo cmdInfo) {
     /*
@@ -461,10 +463,11 @@ void ExecuteCommands(CommandInfo cmd_info, int server_pipe_fd[2]) {
     if (cmd_count == 1) {
         Command cmd = cmds[0];
         if (cmd.argc == 0) return;
-        if (strcmp(cmd.argv[0], "exit") == 0) {
-            printf("Exiting..\n");
-            exit(EXIT_SUCCESS);
-        } else if (strcmp(cmd.argv[0], "cd") == 0) {
+        // if (strcmp(cmd.argv[0], "exit") == 0) {
+        //     printf("Exiting..\n");
+        //     exit(EXIT_SUCCESS);
+        //}
+        if (strcmp(cmd.argv[0], "cd") == 0) {
             if (cmd.argc != 2) {
                 printf("`cd` takes in exactly one argument!\n");
                 return;
