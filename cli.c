@@ -1,5 +1,5 @@
 /* 
-NS CLI
+NS CLI (Phase 2)
 by Nevan John Thomas - 100064872 & Salaheddine Metnani - 100064666
 */
 
@@ -10,23 +10,10 @@ by Nevan John Thomas - 100064872 & Salaheddine Metnani - 100064666
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include "cli.h"
 
-#define READ_END 0
-#define WRITE_END 1
-#define INPUT_BUFFER_SIZE 1000
-
-typedef struct Command
-{
-    int argc;
-    char **argv; // Must be NULL pointer terminated regardless so it can be directly passed to the execvp function
-} Command; 
-// Represents a single command passed into the custom shell
-
-typedef struct CommandInfo
-{
-    int command_count;
-    Command *cmds; // Must be NULL pointer terminated regardless so it can be directly passed to the execvp function
-} CommandInfo; 
 
 void display_commands(CommandInfo cmdInfo) {
     /*
@@ -293,12 +280,12 @@ CommandInfo ParseAllCommands(char *string) {
     return cmd_info;
 }
 
-void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, bool directOutput, int fd_parent[2]) {
+void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, int fd_parent[2]) {
     /*
     This must be a child process because the piped output must also be executed
     and that would kill the program if this was not a fork
     fd_parent represents the file descriptor of the parent to direct 
-    the output to if required.
+    the output to if required (fd_parent can be NULL).
     */
 
     int fd_child[2];
@@ -338,7 +325,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, boo
         close(fd_child[WRITE_END]);
         dup2(fd_child[READ_END], STDIN_FILENO);
         
-        if (directOutput) {
+        if (fd_parent != NULL) {
             close(fd_parent[READ_END]);
             dup2(fd_parent[WRITE_END], STDOUT_FILENO);
         }
@@ -350,7 +337,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, boo
 
         perror("Command execution failed!\n");
 
-        if (directOutput) {
+        if (fd_parent != NULL) {
             close(fd_parent[WRITE_END]);
         }
 
@@ -392,7 +379,7 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
             close(fd_child[WRITE_END]);
             dup2(fd_child[READ_END], STDIN_FILENO);
 
-            if (depth != 0) {
+            if (fd_parent != NULL) {
                 close(fd_parent[READ_END]);
                 dup2(fd_parent[WRITE_END], STDOUT_FILENO);
             }
@@ -404,7 +391,7 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
 
             perror("Command execution failed!\n");
             
-            if (depth != 0) close(fd_parent[WRITE_END]);
+            if (fd_parent != NULL) close(fd_parent[WRITE_END]);
 
             close(fd_child[READ_END]);
             exit(EXIT_FAILURE);
@@ -422,12 +409,12 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
         Command cmd_right = cmds[1];
         
         execute_commands_and_direct_output(
-            cmd_left, cmd_right, true, fd_parent
+            cmd_left, cmd_right, fd_parent
         );
     }
 }
 
-void execute_single_command(Command cmd) {
+void execute_single_command(Command cmd, int fd_parent[2]) {
     pid_t pid;
     pid = fork();
 
@@ -443,9 +430,15 @@ void execute_single_command(Command cmd) {
         char **argv = cmd.argv;
         char *file = argv[0];
 
+        if (fd_parent != NULL) {
+            close(fd_parent[READ_END]);
+            dup2(fd_parent[WRITE_END], STDOUT_FILENO);
+        }
+
         execvp(file, argv);
 
         // If this code runs that means execution failed
+        if (fd_parent != NULL) close(fd_parent[WRITE_END]);
         exit(EXIT_FAILURE);
     } else { // Parent Process
         wait(&status_code); // Wait for the child to finish executing
@@ -457,20 +450,29 @@ void execute_single_command(Command cmd) {
     }
 }
 
-void ExecuteCommands(CommandInfo cmd_info) {
+void ExecuteCommands(CommandInfo cmd_info, int server_pipe_fd[2]) {
     int cmd_count = cmd_info.command_count;
     Command *cmds = cmd_info.cmds;
 
     // Simple command execution when chaining results through a pipe isn't required
+    // Handles certain built-in commands as well
     if (cmd_count == 1) {
         Command cmd = cmds[0];
         if (cmd.argc == 0) return;
-        if (strcmp(cmd.argv[0], "exit") == 0) {
-            printf("Exiting..\n");
-            exit(EXIT_SUCCESS);
+        // if (strcmp(cmd.argv[0], "exit") == 0) {
+        //     printf("Exiting..\n");
+        //     exit(EXIT_SUCCESS);
+        //}
+        if (strcmp(cmd.argv[0], "cd") == 0) {
+            if (cmd.argc != 2) {
+                printf("`cd` takes in exactly one argument!\n");
+                return;
+            }
+            chdir(cmd.argv[1]);
+            return;
         }
 
-        execute_single_command(cmds[0]);
+        execute_single_command(cmds[0], server_pipe_fd);
         return;
     } 
 
@@ -486,16 +488,17 @@ void ExecuteCommands(CommandInfo cmd_info) {
 
     if (pid == 0) { // Child Process
         if (cmd_count == 2) {
-            execute_commands_and_direct_output(cmds[0], cmds[1], false, NULL);
+            execute_commands_and_direct_output(cmds[0], cmds[1], server_pipe_fd);
             return;
         } else {
-            recursive_execute(cmds, 0, cmd_count, NULL);
+            recursive_execute(cmds, 0, cmd_count, server_pipe_fd);
         }
 
         // If this code runs that means execution failed
         exit(EXIT_FAILURE);
     } else { // Parent Process
-        wait(&status_code); // Wait for the child to finish executing
+        wait(&status_code); // Wait for the child to finish executing 
+
         if (status_code == EXIT_FAILURE) {
             perror("Error:\n");
             printf("Command execution failed in the Child Process!\n");
@@ -505,39 +508,31 @@ void ExecuteCommands(CommandInfo cmd_info) {
 
 }
 
-int main(int argc, char **argv) {
-    // Take in commands from the command-line (have a list of possible commands)
-    char buffer_string[INPUT_BUFFER_SIZE];
+void free_command_memory(Command cmd) {
+    // Deallocates the memory associated with the argument value strings
+    // that were copied and stored in the argv array after parsing the command, 
+    // and the memory allocated for the argument argv array of pointers itself.
 
-    static char *pwd_argv[] = {"pwd", NULL};
-    static char *cat_argv[] = {"cat", "welcome.txt", NULL};
-    
-    // Run basic commands to provide descriptions for the user
-    Command pwd_cmd;
-    pwd_cmd.argc = 1;
-    pwd_cmd.argv = pwd_argv;
-
-    Command cat_cmd;
-    cat_cmd.argc = 1;
-    cat_cmd.argv = cat_argv;
-
-    execute_single_command(cat_cmd);
-    execute_single_command(pwd_cmd);
-    printf("\n");
-
-    // Main loop - receives user input and consistently spawns processes as required
-    // to keep the main loop running
-    while (true) {
-        printf("> ");
-        fgets(buffer_string, INPUT_BUFFER_SIZE, stdin);
-        CommandInfo cmdInfo = ParseAllCommands(buffer_string);
-
-        if (cmdInfo.command_count != 0) {
-            ExecuteCommands(cmdInfo);
-        } else {
-            printf("No command was provided!\n");
-        }
+    for (int i = 0; i < cmd.argc; i++) {
+        free(cmd.argv[i]); // Free memory for each argv string
+        cmd.argv[i] = NULL;
     }
 
-    return 0;
+    free(cmd.argv); // Free memory for argv string pointers
+    cmd.argc = 0;
+    cmd.argv = NULL;
+}
+
+void free_commands_array_memory(CommandInfo cmd_info) {
+    // Frees memory for an array of commands
+    // and frees any memory acquired for the creation of each
+    // individual command as well.
+
+    for (int i = 0; i < cmd_info.command_count; i++) {
+        free_command_memory(cmd_info.cmds[i]);
+    }
+
+    free(cmd_info.cmds);
+    cmd_info.command_count = 0;
+    cmd_info.cmds = NULL;
 }

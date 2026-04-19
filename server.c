@@ -1,0 +1,168 @@
+/* 
+NS CLI (Phase 2)
+by Nevan John Thomas - 100064872 & Salaheddine Metnani - 100064666
+*/
+
+/*
+Must be compiled using:
+`gcc cli.c server.c -o server` with the main function in cli.c commented out
+because functions implemented in cli.c are used here
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/ioctl.h>
+#include "cli.h"
+
+#define SERVER_PORT 8080
+#define BACKLOG 3
+
+void send_size_and_string_to_client(int socket_connection, char *string, int bytes, bool canTransmit) {
+    // Communicates with the client in a standardized form
+
+    // Send the size first so that the client can prepare a buffer for the resulting text
+    send(socket_connection, &bytes, sizeof(int), 0); 
+    //sleep(1); // Wait so that the client can process the information
+
+    send(socket_connection, string, bytes, 0); // Send the actual text afterward
+    //sleep(1);
+    
+    send(socket_connection, &canTransmit, sizeof(bool), 0); 
+    // Sends whether the client can transmit their own messages over the socket after this message
+
+}
+
+void read_pipe_and_client_forward(int server_output_pipe[2], int socket_connection, bool canTransmit) {
+    close(server_output_pipe[WRITE_END]);
+    int bytes_available;
+    if (ioctl(server_output_pipe[READ_END], FIONREAD, &bytes_available) < 0) {
+        // Handle error
+        perror("Error reading from the server output pipe:\n");
+        exit(EXIT_FAILURE);
+    }
+
+    char result_string[bytes_available+1]; //+1 to account for the null terminator
+    read(server_output_pipe[READ_END], result_string, sizeof(char) * bytes_available);
+    result_string[bytes_available] = '\0'; // Null terminate the string
+    send_size_and_string_to_client(socket_connection, result_string, bytes_available + 1, canTransmit);
+    close(server_output_pipe[READ_END]);
+}
+
+void run_cli(int socket_connection) {
+    // The CLI needs to copy all the final STDOUT outputs to the server_pipe_fd.
+    // The parent process then needs to read from the server_pipe_fd and write the results
+    // through the socket to the client. (To talk to the client, the server must first
+    // send the no. of character bytes it will transmit followed by the actual content)
+    // the server_write_pipe_fd must only be written to in the child processes
+
+    int server_output_pipe[2];
+
+    char buffer_string[INPUT_BUFFER_SIZE];
+
+    static char *pwd_argv[] = {"pwd", NULL};
+    static char *cat_argv[] = {"cat", "welcome.txt", NULL};
+    
+    Command pwd_cmd;
+    pwd_cmd.argc = 1;
+    pwd_cmd.argv = pwd_argv;
+
+    Command cat_cmd;
+    cat_cmd.argc = 1;
+    cat_cmd.argv = cat_argv;
+
+    pipe(server_output_pipe);
+    execute_single_command(cat_cmd, server_output_pipe);
+    read_pipe_and_client_forward(server_output_pipe, socket_connection, false);
+
+    pipe(server_output_pipe); // Create a new pipe so that the next command 
+    execute_single_command(pwd_cmd, server_output_pipe);
+    read_pipe_and_client_forward(server_output_pipe, socket_connection, false);
+
+    send_size_and_string_to_client(socket_connection, "\n", sizeof(char) * 2, false);
+
+    while (true) {
+        char prompt_text[] = "> ";
+        send_size_and_string_to_client(socket_connection, prompt_text, sizeof(char) * (strlen(prompt_text) + 1), true);
+        // printf("> ");
+
+        read(socket_connection, buffer_string, INPUT_BUFFER_SIZE);
+        // fgets(buffer_string, INPUT_BUFFER_SIZE, stdin);
+
+        // Check for the exit command first so that the server can exit before doing any other processing
+        // Ensures that server resources aren't wasted on processing the exit command, 
+        // client receives a response and the server doesnt close after session termination
+
+        buffer_string[strcspn(buffer_string, "\n")] = '\0';
+
+        if (strcmp(buffer_string, "exit") == 0) {
+             char exit_msg[] = "Exiting..\n";
+             send_size_and_string_to_client(socket_connection, exit_msg, sizeof(char) * (strlen(exit_msg) + 1), false);
+             close(socket_connection); 
+             return;                // Return to main() — server stays running
+    }
+        CommandInfo cmdInfo = ParseAllCommands(buffer_string);
+
+        if (cmdInfo.command_count != 0) {
+            pipe(server_output_pipe);
+
+            ExecuteCommands(cmdInfo, server_output_pipe);
+            read_pipe_and_client_forward(server_output_pipe, socket_connection, false);
+
+            free_commands_array_memory(cmdInfo);
+        } else {
+            char error_txt[] = "No command was provided!\n";
+            send_size_and_string_to_client(socket_connection, error_txt, sizeof(char) * (strlen(error_txt) + 1), false);
+        }
+    }
+}
+
+int main(int argc, char **argv) {
+    int server_socket;
+    struct sockaddr_in server_addr;
+    socklen_t addrlen = sizeof(server_addr);
+
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    printf("Socket object created!\n");
+    
+    if (server_socket < 0) {
+        perror("Socket Creation Failed:\n");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+    
+    // Server Address options
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(SERVER_PORT);
+    
+    // Bind Server Address to the Socket
+    if (bind(server_socket, (const struct sockaddr*) &server_addr, addrlen) < 0) {
+        perror("Socket Bind Failed:\n");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+    printf("Socket bind succeeded!\n");
+    
+    // Listen for connections
+    printf("Beginning to listen for socket connections.\n");
+    if (listen(server_socket, BACKLOG) < 0) {
+        perror("Listening for Socket Connections Failed:\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("Waiting to accept a client..\n");
+    int socket_connection = accept(server_socket, (struct sockaddr*) &server_addr, &addrlen);
+    
+    if (socket_connection < 0) {
+        perror("Failed to accept the client!\n");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Client successfully connected! Running CLI....\n");
+    run_cli(socket_connection);
+
+    return 0;
+}
