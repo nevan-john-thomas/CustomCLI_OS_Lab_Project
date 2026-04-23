@@ -13,13 +13,11 @@ Must be compiled using:
 because functions implemented in cli.c are used here
 */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
+#include "cli.h"
 #include <arpa/inet.h>
 #include <sys/ioctl.h>
-#include "cli.h"
 
+#define MAX_CONCURRENT_CONNECTIONS 3
 #define SERVER_PORT 8080
 #define BACKLOG 3
 
@@ -44,7 +42,7 @@ void read_pipe_and_client_forward(int server_output_pipe[2], int socket_connecti
     if (ioctl(server_output_pipe[READ_END], FIONREAD, &bytes_available) < 0) {
         // Handle error
         perror("Error reading from the server output pipe:\n");
-        exit(EXIT_FAILURE);
+        pthread_exit(NULL);
     }
 
     char result_string[bytes_available+1]; //+1 to account for the null terminator
@@ -54,12 +52,16 @@ void read_pipe_and_client_forward(int server_output_pipe[2], int socket_connecti
     close(server_output_pipe[READ_END]);
 }
 
-void run_cli(int socket_connection) {
+void *run_cli(void *arg) {
     // The CLI needs to copy all the final STDOUT outputs to the server_pipe_fd.
     // The parent process then needs to read from the server_pipe_fd and write the results
     // through the socket to the client. (To talk to the client, the server must first
     // send the no. of character bytes it will transmit followed by the actual content)
     // the server_write_pipe_fd must only be written to in the child processes
+
+    int socket_connection = *(int*) arg;
+    free(arg); 
+    // Convert the heap variable back to a stack variable and free the memory allocated on the heap
 
     int server_output_pipe[2];
 
@@ -104,7 +106,8 @@ void run_cli(int socket_connection) {
              char exit_msg[] = "Exiting..\n";
              send_size_and_string_to_client(socket_connection, exit_msg, sizeof(char) * (strlen(exit_msg) + 1), false);
              close(socket_connection); 
-             return;                // Return to main() — server stays running
+             pthread_exit(NULL);
+             return NULL;                // Return to main() — server stays running
     }
         CommandInfo cmdInfo = ParseAllCommands(buffer_string);
 
@@ -120,6 +123,8 @@ void run_cli(int socket_connection) {
             send_size_and_string_to_client(socket_connection, error_txt, sizeof(char) * (strlen(error_txt) + 1), false);
         }
     }
+
+    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -155,18 +160,37 @@ int main(int argc, char **argv) {
         perror("Listening for Socket Connections Failed:\n");
         exit(EXIT_FAILURE);
     }
-    
-    printf("Waiting to accept a client..\n");
-    int socket_connection = accept(server_socket, (struct sockaddr*) &server_addr, &addrlen);
-    
-    if (socket_connection < 0) {
-        perror("Failed to accept the client!\n");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
 
-    printf("Client successfully connected! Running CLI....\n");
-    run_cli(socket_connection);
+    int* socket_connection_val_ptr;
+    int socket_connection;
+    
+    // Keep accepting new clients
+    while (true) {
+        printf("Waiting to accept a client..\n");
+        socket_connection = accept(server_socket, (struct sockaddr*) &server_addr, &addrlen);
+        
+        if (socket_connection < 0) {
+            perror("Failed to accept the client!\n");
+            close(server_socket);
+            continue;
+        }
+
+        printf("Client successfully connected! Running CLI....\n");
+        
+        pthread_t thread;
+        pthread_attr_t attribute;
+
+        socket_connection_val_ptr = (int*) malloc(sizeof(int)); 
+        // Allocate memory on the heap so that the socket connection value 
+        // can be accessed within the thread until the end of its execution
+
+        *socket_connection_val_ptr = socket_connection;
+
+        pthread_attr_init(&attribute);
+        pthread_attr_setdetachstate(&attribute, PTHREAD_CREATE_DETACHED);
+        pthread_create(&thread, &attribute, run_cli, socket_connection_val_ptr);
+
+    }
 
     /*
     Once a client connection has been accepted. A while loop needs to be established
