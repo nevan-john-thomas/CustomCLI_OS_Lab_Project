@@ -1,5 +1,5 @@
 /* 
-NS CLI (Phase 2)
+NS CLI (Phase 3)
 by Nevan John Thomas - 100064872 & Salaheddine Metnani - 100064666
 */
 
@@ -298,6 +298,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, int
         // Child process
         close(fd_child[READ_END]);
         dup2(fd_child[WRITE_END], STDOUT_FILENO);
+        dup2(fd_child[WRITE_END], STDERR_FILENO);
         // execlp("cat", "cat", "file.txt", NULL);
 
         char **argv = cmd_left.argv;
@@ -318,6 +319,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, int
         if (fd_parent != NULL) {
             close(fd_parent[READ_END]);
             dup2(fd_parent[WRITE_END], STDOUT_FILENO);
+            dup2(fd_parent[WRITE_END], STDERR_FILENO);
         }
 
         char **argv = cmd_right.argv;
@@ -372,6 +374,7 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
             if (fd_parent != NULL) {
                 close(fd_parent[READ_END]);
                 dup2(fd_parent[WRITE_END], STDOUT_FILENO);
+                dup2(fd_parent[WRITE_END], STDERR_FILENO);
             }
 
             char **argv = cmd_right.argv;

@@ -1,5 +1,5 @@
 /* 
-NS CLI (Phase 2)
+NS CLI (Phase 3)
 by Nevan John Thomas - 100064872 & Salaheddine Metnani - 100064666
 */
 
@@ -47,7 +47,7 @@ void read_pipe_and_client_forward(int server_output_pipe[2], int socket_connecti
     send_size_and_string_to_client(socket_connection, result_string, bytes_available + 1, canTransmit);
     close(server_output_pipe[READ_END]);
 }
-
+    
 void *run_cli(void *arg) {
     // The CLI needs to copy all the final STDOUT outputs to the server_pipe_fd.
     // The parent process then needs to read from the server_pipe_fd and write the results
@@ -59,9 +59,12 @@ void *run_cli(void *arg) {
     free(arg); 
     // Convert the heap variable back to a stack variable and free the memory allocated on the heap
 
-    int server_output_pipe[2];
+    int server_output_pipe[2];  
 
     char buffer_string[INPUT_BUFFER_SIZE];
+
+    char current_dir[1024];
+    getcwd(current_dir, sizeof(current_dir));
 
     static char *pwd_argv[] = {"pwd", NULL};
     static char *cat_argv[] = {"cat", "welcome.txt", NULL};
@@ -104,14 +107,55 @@ void *run_cli(void *arg) {
              close(socket_connection); 
              pthread_exit(NULL);
              return NULL;                // Return to main() — server stays running
-    }
+        }
+        
+        if (strncmp(buffer_string, "cd ", 3) == 0 || strcmp(buffer_string, "cd") == 0) {
+            char *path = buffer_string + 3; // Everything after "cd "
+            if (strlen(path) == 0) {
+                // cd with no args — go to HOME
+                char *home = getenv("HOME");
+                if (home) strncpy(current_dir, home, sizeof(current_dir));
+            } else {
+                // Build the new path
+                char new_dir[1024];
+                if (path[0] == '/') {
+                    // Absolute path
+                    strncpy(new_dir, path, sizeof(new_dir));
+                } else {
+                    // Relative path — combine with current_dir
+                    snprintf(new_dir, sizeof(new_dir), "%s/%s", current_dir, path);
+                }
+                // Check it actually exists before updating
+                if (access(new_dir, F_OK) == 0) {
+                    strncpy(current_dir, new_dir, sizeof(current_dir));
+                } else {
+                    char err[1100];
+                    snprintf(err, sizeof(err), "cd: %s: No such file or directory\n", path);
+                    send_size_and_string_to_client(socket_connection, err, strlen(err) + 1, false);
+                }
+            }
+            // Send empty response to keep protocol in sync
+            send_size_and_string_to_client(socket_connection, "", 1, false);
+            continue;
+        }
+
         CommandInfo cmdInfo = ParseAllCommands(buffer_string);
 
         if (cmdInfo.command_count != 0) {
             pipe(server_output_pipe);
 
-            ExecuteCommands(cmdInfo, server_output_pipe);
-            read_pipe_and_client_forward(server_output_pipe, socket_connection, false);
+            pid_t pid = fork();
+            if (pid == 0) {
+                // Child process — change to this thread's directory and execute
+                chdir(current_dir);
+                ExecuteCommands(cmdInfo, server_output_pipe);
+                exit(EXIT_SUCCESS);
+            } else {
+                // Parent (thread) — wait for child then forward output
+                int status;
+                wait(&status);
+                read_pipe_and_client_forward(server_output_pipe, socket_connection, false);
+            }
 
             free_commands_array_memory(cmdInfo);
         } else {
@@ -119,7 +163,6 @@ void *run_cli(void *arg) {
             send_size_and_string_to_client(socket_connection, error_txt, sizeof(char) * (strlen(error_txt) + 1), false);
         }
     }
-
     return NULL;
 }
 
@@ -185,7 +228,6 @@ int main(int argc, char **argv) {
         pthread_attr_init(&attribute);
         pthread_attr_setdetachstate(&attribute, PTHREAD_CREATE_DETACHED);
         pthread_create(&thread, &attribute, run_cli, socket_connection_val_ptr);
-
     }
 
     return 0;

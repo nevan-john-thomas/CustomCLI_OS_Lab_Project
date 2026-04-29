@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <sys/wait.h>
 #include <pthread.h>
+#include <errno.h>
 
 #define READ_END 0
 #define WRITE_END 1
