@@ -426,6 +426,8 @@ void execute_single_command(Command cmd, int fd_parent[2]) {
         if (fd_parent != NULL) {
             close(fd_parent[READ_END]);
             dup2(fd_parent[WRITE_END], STDOUT_FILENO);
+            dup2(fd_parent[WRITE_END], STDERR_FILENO);
+            close(fd_parent[WRITE_END]);
         }
 
         execvp(file, argv);
@@ -456,14 +458,14 @@ void ExecuteCommands(CommandInfo cmd_info, int server_pipe_fd[2]) {
         //     printf("Exiting..\n");
         //     pthread_exit(NULL);
         //}
-        if (strcmp(cmd.argv[0], "cd") == 0) {
-            if (cmd.argc != 2) {
-                printf("`cd` takes in exactly one argument!\n");
-                return;
-            }
-            chdir(cmd.argv[1]);
-            return;
-        }
+        // if (strcmp(cmd.argv[0], "cd") == 0) {
+        //     if (cmd.argc != 2) {
+        //         printf("`cd` takes in exactly one argument!\n");
+        //         return;
+        //     }
+        //     chdir(cmd.argv[1]);
+        //     return;
+        // }
 
         execute_single_command(cmds[0], server_pipe_fd);
         return;
@@ -480,6 +482,12 @@ void ExecuteCommands(CommandInfo cmd_info, int server_pipe_fd[2]) {
     }
 
     if (pid == 0) { // Child Process
+        if (server_pipe_fd != NULL) {
+            close(server_pipe_fd[READ_END]);
+            dup2(server_pipe_fd[WRITE_END], STDOUT_FILENO);
+            dup2(server_pipe_fd[WRITE_END], STDERR_FILENO);
+        }
+        
         if (cmd_count == 2) {
             execute_commands_and_direct_output(cmds[0], cmds[1], server_pipe_fd);
             return;
