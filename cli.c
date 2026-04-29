@@ -3,17 +3,7 @@ NS CLI (Phase 2)
 by Nevan John Thomas - 100064872 & Salaheddine Metnani - 100064666
 */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <string.h>
-#include <stdbool.h>
-#include <ctype.h>
-#include <sys/ioctl.h>
-#include <sys/wait.h>
 #include "cli.h"
-
 
 void display_commands(CommandInfo cmdInfo) {
     /*
@@ -291,7 +281,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, int
     int fd_child[2];
     if (pipe(fd_child) == -1) {
         printf("Failed to create a pipe!\n");
-        exit(EXIT_FAILURE);
+        pthread_exit(NULL);
     }
 
     pid_t pid;
@@ -301,7 +291,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, int
 
     if (pid < 0) {
         printf("Process creation failed!\n");
-        exit(EXIT_FAILURE);
+        pthread_exit(NULL);
     }
 
     if (pid == 0) {
@@ -318,7 +308,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, int
         perror("Command execution failed!\n");
 
         close(fd_child[WRITE_END]);
-        exit(EXIT_FAILURE);
+        pthread_exit(NULL);
     } else {
         // Parent process
         wait(&status_code);
@@ -342,7 +332,7 @@ void execute_commands_and_direct_output(Command cmd_left, Command cmd_right, int
         }
 
         close(fd_child[READ_END]);
-        exit(EXIT_FAILURE);
+        pthread_exit(NULL);
     }
 }
 
@@ -353,7 +343,7 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
         int fd_child[2];
         if (pipe(fd_child) == -1) {
             printf("Failed to create a pipe!\n");
-            exit(EXIT_FAILURE);
+            pthread_exit(NULL);
         }
 
         Command cmd_right = cmds[command_count - depth - 1];
@@ -394,7 +384,7 @@ void recursive_execute(Command *cmds, int depth, int command_count, int fd_paren
             if (fd_parent != NULL) close(fd_parent[WRITE_END]);
 
             close(fd_child[READ_END]);
-            exit(EXIT_FAILURE);
+            pthread_exit(NULL);
 
             if (status_code == EXIT_FAILURE) {
                 perror("Error:\n");
@@ -439,7 +429,7 @@ void execute_single_command(Command cmd, int fd_parent[2]) {
 
         // If this code runs that means execution failed
         if (fd_parent != NULL) close(fd_parent[WRITE_END]);
-        exit(EXIT_FAILURE);
+        pthread_exit(NULL);
     } else { // Parent Process
         wait(&status_code); // Wait for the child to finish executing
         if (status_code == EXIT_FAILURE) {
@@ -461,7 +451,7 @@ void ExecuteCommands(CommandInfo cmd_info, int server_pipe_fd[2]) {
         if (cmd.argc == 0) return;
         // if (strcmp(cmd.argv[0], "exit") == 0) {
         //     printf("Exiting..\n");
-        //     exit(EXIT_SUCCESS);
+        //     pthread_exit(NULL);
         //}
         if (strcmp(cmd.argv[0], "cd") == 0) {
             if (cmd.argc != 2) {
